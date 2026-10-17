@@ -31,7 +31,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .cta.alt{background:transparent;color:var(--fg);border:1px solid var(--line)}
 .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
 .toggle[aria-pressed=true]{background:#7a2cff;border-color:#b58cff;color:#fff}
-.veh[aria-pressed=true]{background:var(--ice);border-color:var(--ice);color:#04141c}
+.diff[aria-pressed=true],.veh[aria-pressed=true]{background:var(--ice);border-color:var(--ice);color:#04141c}
 .stamp{font-family:var(--display);font-size:clamp(22px,7vw,34px);color:var(--warn);border:3px solid var(--warn);padding:6px 14px;transform:rotate(-6deg);letter-spacing:.06em}
 .sub{font-size:13px;color:var(--fg);min-height:1.3em}
 .final{font-size:14px;color:var(--dim)}
@@ -68,8 +68,10 @@ tr.me td{color:var(--ice)}
 
   <div class="ov" id="start">
     <h1>Thruster<br><em>Roadster</em></h1>
-    <p>Drive the road. Tap to hop, hold to fly over traffic and under street lights, signs and billboards. Double tap for a midair flip. Reach the roundabout to finish.</p>
+    <p>Drive the road. Tap to hop, hold to fly over traffic and under street lights, signs and billboards. Double tap for a midair flip. Drive through the charging station for a full recharge. Reach the roundabout to finish.</p>
     <div class="row" role="group" aria-label="Vehicle"><button class="chip veh" id="v-roadster" aria-pressed="true">Roadster</button><button class="chip veh" id="v-rickshaw" aria-pressed="false">রিকশা (Battery rickshaw)</button></div>
+    <div class="row" role="group" aria-label="Difficulty"><button class="chip diff" id="d-easy" aria-pressed="true">Easy</button><button class="chip diff" id="d-hard" aria-pressed="false">Hard</button></div>
+    <div class="note" id="diffnote"></div>
     <div class="row"><button class="cta" id="go">Launch</button></div>
     <div class="row"><button class="chip toggle" id="ludi" aria-pressed="false">Ludicrous mode: off</button><button class="chip" id="openboard">Leaderboard</button></div>
     <div class="note">Space, click or tap</div>
@@ -97,7 +99,8 @@ const W=420,H=640,GROUND=H-64,ROAD=GROUND+16,CX=110;
 const cv=$('c'),ctx=cv.getContext('2d');
 const S={mode:'ready',y:300,vy:0,rot:0,thr:0,held:false,flipT:-1,flipDir:1,lastTap:0,
   score:0,best:0,batt:100,t:0,dist:0,obs:[],picks:[],parts:[],nextX:0,spawned:0,
-  ludi:false,veh:'roadster',shake:0,flash:0,warn:false,warnMsg:'',cause:'',deadAt:0,passedCount:0,px:110,spin:0,phase:'run',loop:null,lastRef:null,sinceSpawn:0,gapDist:330,onGround:true};
+  ludi:false,veh:'roadster',shake:0,flash:0,warn:false,warnMsg:'',cause:'',deadAt:0,passedCount:0,px:110,spin:0,phase:'run',loop:null,lastRef:null,sinceSpawn:0,gapDist:330,onGround:true,hard:false,pickPlan:new Set()};
+try{S.hard=localStorage.getItem('tr_hard')==='1'}catch(e){}
 try{S.best=+localStorage.getItem('tr_best')||0;S.veh=localStorage.getItem('tr_veh')||'roadster'}catch(e){}
 
 /* ---------- audio ---------- */
@@ -175,18 +178,42 @@ function addGround(x,kind,still){const d=GROUND_KINDS[kind];
 function addOver(x,kind,bottom){const d=OVER_KINDS[kind];return addObs({cat:'o',kind,x,w:d.w,top:-10,bot:bottom,vf:1})}
 function addAir(x,kind,y){const d=AIR_KINDS[kind];
   return addObs({cat:'a',kind,x,w:d.w,h:d.h,top:y-d.h/2,bot:y+d.h/2,vf:kind==='balloons'?1:1.25+Math.random()*.25,y0:y})}
+/* ---------- battery plan ---------- */
+const STATION_AT=13,PICK_AMT=12,THRUST_RATE=4,BASE_RATE=.5,HARD_DRAIN=1.2,TYP_THRUST=1.2;
+const RESERVE={easy:65,hard:14};
+const drainMul=()=>(S.ludi?1.35:1)*(S.hard?HARD_DRAIN:1);
+/* Models a typical player (TYP_THRUST seconds of thrust per obstacle), walks the level event by event,
+   and places a pickup whenever the next event would push the charge under the reserve. The station
+   refills to 100 once at event STATION_AT. */
+function planBattery(){
+  const L=S.ludi?1.4:1,mul=drainMul(),N=FINALE+1,res=S.hard?RESERVE.hard:RESERVE.easy;
+  const sp=i=>(190+Math.min(i*3.2,170))*L;
+  const secs=i=>i===0?(W+170-CX)/sp(0):(250+sp(i)*.5+35)/sp(i);
+  const cost=i=>mul*(BASE_RATE*secs(i)+THRUST_RATE*TYP_THRUST);
+  S.pickPlan=new Set();let b=100,min=100;
+  for(let i=0;i<=N;i++){
+    b-=cost(i);min=Math.min(min,b);
+    if(i===STATION_AT){b=100;continue}
+    if(i<N&&i!==STATION_AT-1&&b-cost(i+1)<res){S.pickPlan.add(i);b=Math.min(100,b+PICK_AMT)}
+  }
+  S.planMin=min;
+}
 function spawn(x){
-  const n=S.spawned++,roll=Math.random();
+  const n=S.spawned++,roll=Math.random(),hard=S.hard;
+  const nearPick=S.pickPlan.has(n)||S.pickPlan.has(n-1);   /* a battery sits just before or after this event */
+  const overOK=hard&&!nearPick;                              /* hanging hazards only in hard mode, never beside a battery */
   const comboAt=.76-Math.min(.2,S.passedCount*.005);
   let ref;
-  if(n<2||roll<.38){ref=addGround(x,keyOf(GROUND_KINDS))}
-  else if(roll<.58){ref=addOver(x,keyOf(OVER_KINDS),340+Math.random()*165)}
+  if(n===STATION_AT){ref=addObs({cat:'s',kind:'station',x,w:200,top:ROAD-100,bot:ROAD,vf:1})}
+  else if(n<2||roll<.38||nearPick){ref=addGround(x,keyOf(GROUND_KINDS))}
+  else if(roll<.58){ref=overOK?addOver(x,keyOf(OVER_KINDS),340+Math.random()*165):addAir(x,keyOf(AIR_KINDS),350+Math.random()*170)}
   else if(roll<comboAt){ref=addAir(x,keyOf(AIR_KINDS),350+Math.random()*170)}
   else{
-    const g=addGround(x,keyOf(GROUND_KINDS),true),ok=keyOf(OVER_KINDS),d=OVER_KINDS[ok];
-    addOver(x+g.w/2-d.w/2,ok,Math.max(140,g.top-corridorNow()));ref=g;
+    const g=addGround(x,keyOf(GROUND_KINDS),true);ref=g;
+    if(overOK){const ok=keyOf(OVER_KINDS),d=OVER_KINDS[ok];addOver(x+g.w/2-d.w/2,ok,Math.max(140,g.top-corridorNow()))}
+    else{const a=addAir(x+g.w/2-13,Math.random()<.5?'bird':'drone',Math.max(150,g.top-corridorNow()-8));a.vf=1}
   }
-  if(n%3===2)S.picks.push({x:x+S.gapDist/2+60,y:ROAD-120-Math.random()*150,got:false});
+  if(S.pickPlan.has(n))S.picks.push({x:x+S.gapDist/2+60,y:ROAD-110-Math.random()*70,got:false});
   S.lastRef=ref;
 }
 
@@ -249,7 +276,7 @@ function resetRun(){
   S.score=0;S.batt=100;S.obs=[];S.picks=[];S.parts=[];S.spawned=0;S.passedCount=0;S.dist=0;S.sinceSpawn=0;S.gapDist=330;
   S.lastRef=null;S.loop=null;S.shake=0;S.flash=0;S.warn=false;S.cause='';S.onGround=true;
   $('fsd').hidden=true;$('fsd').classList.remove('on');
-  spawn(W+170);
+  planBattery();spawn(W+170);
 }
 function press(){
   audioInit();
@@ -324,7 +351,7 @@ function update(dt){
     const tilt=S.onGround?0:Math.max(-.45,Math.min(.6,S.vy/900));
     if(S.flipT>=0){S.flipT+=dt/.55;if(S.flipT>=1){S.flipT=-1;S.rot=tilt}else S.rot=tilt+S.flipDir*S.flipT*Math.PI*2}
     else{S.rot=((S.rot+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;S.rot+=(tilt-S.rot)*Math.min(1,dt*14)}
-    S.batt-=(.5+S.thr*3.2)*(S.ludi?1.35:1)*dt;if(S.batt<0)S.batt=0;
+    S.batt-=(BASE_RATE+S.thr*THRUST_RATE)*drainMul()*dt;if(S.batt<0)S.batt=0;
     if(S.phase==='run'){
       S.sinceSpawn+=sp*dt;
       if(S.sinceSpawn>=S.gapDist){S.sinceSpawn=0;S.gapDist=250+sp*.5+Math.random()*70;spawn(W+70)}
@@ -332,11 +359,22 @@ function update(dt){
     for(const o of S.obs){o.x-=sp*o.vf*dt;
       if(o.cat==='a'){const b=Math.sin(S.t*(o.kind==='drone'?2.6:4)+o.seed)*(o.kind==='drone'?20:9);o.top=o.y0+b-o.h/2;o.bot=o.y0+b+o.h/2}}
     for(const p of S.picks)p.x-=sp*dt;
-    S.obs=S.obs.filter(o=>o.x>-160);S.picks=S.picks.filter(p=>p.x>-60);
+    S.obs=S.obs.filter(o=>o.x+o.w>-60);S.picks=S.picks.filter(p=>p.x>-60);
     const hw=V.hw-6,hh=V.hh-3;let next=null,nd=1e9;
     for(const o of S.obs){
       if(!o.passed&&o.x+o.w<CX-hw){o.passed=true;S.passedCount++;S.score+=S.ludi?2:1;sfx.pass();
         if(S.passedCount%10===0)toast(S.veh==='rickshaw'?'ভাড়া বেড়ে গেছে!':'FSD (Supervised)');}
+      if(o.cat==='s'){
+        if(!o.said&&o.x<W-10){o.said=true;toast('Charging station: drive through low','#5dff9a')}
+        const inz=rectHit(CX-hw,S.y-hh,hw*2,hh*2,o.x+8,o.top,o.w-16,o.bot-o.top);
+        o.active=inz&&S.batt<100;
+        if(o.active){
+          S.batt=Math.min(100,S.batt+160*dt);
+          if(!o.charged){o.charged=true;sfx.pick()}
+          if(S.batt>=100&&!o.full){o.full=true;toast('FULLY CHARGED','#5dff9a');sfx.win()}
+        }
+        continue;
+      }
       if(o.x+o.w>CX-hw&&o.x<nd){nd=o.x;next=o}
       const ins=o.cat==='g'?3:(o.kind==='wires'?22:4);
       if(rectHit(CX-hw,S.y-hh,hw*2,hh*2,o.x+ins,o.top,o.w-ins*2,o.bot-o.top)){
@@ -525,6 +563,28 @@ function aBalloons(o){
   pos.forEach((p,i)=>{ctx.fillStyle=cols[i];ctx.beginPath();ctx.ellipse(p[0],p[1],9,11,0,0,7);ctx.fill()});
   ctx.fillStyle='#c1121f';ctx.fillRect(-5,18,10,6);ctx.restore();
 }
+function drawStation(o){
+  const x=o.x,w=o.w,top=ROAD-118;
+  ctx.fillStyle=o.active?'rgba(93,255,154,.5)':'rgba(93,255,154,.2)';ctx.fillRect(x+6,ROAD-5,w-12,7);
+  ctx.fillStyle='#e8e9ee';ctx.fillRect(x+4,top,8,118);ctx.fillRect(x+w-12,top,8,118);
+  ctx.fillStyle='#e31937';ctx.fillRect(x-6,top-2,w+12,18);ctx.fillStyle='#fff';ctx.fillRect(x-6,top+16,w+12,3);
+  ctx.textAlign='center';ctx.fillStyle='#fff';ctx.font='700 12px "Chakra Petch",sans-serif';
+  ctx.fillText(S.veh==='rickshaw'?'চার্জিং স্টেশন':'SUPERCHARGER',x+w/2,top+12);
+  for(let i=0;i<3;i++){
+    const px=x+34+i*((w-88)/2);
+    ctx.fillStyle='#e8e9ee';ctx.fillRect(px,ROAD-54,16,54);ctx.fillStyle='#e31937';ctx.fillRect(px,ROAD-46,16,18);
+    ctx.fillStyle='#fff';ctx.fillRect(px+4,ROAD-41,8,3);ctx.fillRect(px+7,ROAD-41,3,9);
+    ctx.fillStyle=o.active?'#5dff9a':'#1c2a22';ctx.fillRect(px+5,ROAD-54,6,4);
+  }
+  ctx.font='600 9px "Chakra Petch",sans-serif';ctx.fillStyle='#5dff9a';ctx.fillText('ONE FULL RECHARGE',x+w/2,top+34);
+  ctx.textAlign='left';
+  if(o.active){
+    ctx.strokeStyle='#b8ffd6';ctx.lineWidth=2;ctx.beginPath();
+    const sx=x+w/2,sy=top+19;ctx.moveTo(sx,sy);
+    for(let k=1;k<=5;k++)ctx.lineTo(sx+(S.px-sx)*k/5+(Math.random()-.5)*12,sy+(S.y-sy)*k/5+(Math.random()-.5)*12);
+    ctx.stroke();
+  }
+}
 const DRAWO={light:oLight,sign:oSign,billboard:oBill,wires:oWires,hook:oHook};
 const DRAWA={bird:aBird,drone:aDrone,balloons:aBalloons};
 function drawObstacles(){
@@ -533,7 +593,7 @@ function drawObstacles(){
     if(o.cat==='g'){
       if(o.kind==='charger')gCharger(o);
       else{ctx.save();ctx.translate(o.x+o.w,o.top);ctx.scale(-1,1);DRAWG[o.kind](o.w,o.bot-o.top,o);ctx.restore()}
-    }else if(o.cat==='o')DRAWO[o.kind](o);else DRAWA[o.kind](o);
+    }else if(o.cat==='s')drawStation(o);else if(o.cat==='o')DRAWO[o.kind](o);else DRAWA[o.kind](o);
   }
   for(const p of S.picks){
     if(p.got||p.x>W+80)continue;
@@ -730,7 +790,7 @@ function updateHud(){
   const b=Math.max(0,Math.round(S.batt));$('battpct').textContent=b+'%';
   const bar=$('battbar');bar.style.width=b+'%';bar.style.background=b>40?'#5dff9a':b>15?'#ff8a1f':'#ff3d4f';
   $('spd').textContent=S.mode==='play'?Math.round(speedNow()*.9)+' km/h':'';
-  const tag=$('modeTag');tag.textContent=S.ludi?'Ludicrous mode':'Standard mode';tag.style.color=S.ludi?'#c9a2ff':'';
+  const tag=$('modeTag');tag.textContent=(S.hard?'Hard':'Easy')+(S.ludi?' · Ludicrous':'');tag.style.color=S.ludi?'#c9a2ff':'';
 }
 function setVeh(v,quiet){
   S.veh=v;lsSet('tr_veh',v);
@@ -739,6 +799,11 @@ function setVeh(v,quiet){
   if(v==='rickshaw'&&!quiet){audioInit();sfx.horn()}
 }
 
+function setHard(h){
+  S.hard=h;lsSet('tr_hard',h?'1':'0');
+  $('d-easy').setAttribute('aria-pressed',!h);$('d-hard').setAttribute('aria-pressed',h);
+  $('diffnote').textContent=h?'Overhead wires, lights and billboards. Fewer batteries.':'No overhead hazards. More batteries.';
+}
 /* ---------- input ---------- */
 const stage=$('stage');
 stage.addEventListener('pointerdown',e=>{
@@ -768,6 +833,8 @@ $('closeboard').onclick=closeBoard;
 $('tabBest').onclick=()=>{boardTab='best';renderBoard()};
 $('tabWorst').onclick=()=>{boardTab='worst';renderBoard()};
 $('name').addEventListener('change',renameMe);
+$('d-easy').onclick=()=>setHard(false);
+$('d-hard').onclick=()=>setHard(true);
 $('v-roadster').onclick=()=>setVeh('roadster');
 $('v-rickshaw').onclick=()=>setVeh('rickshaw');
 $('ludi').onclick=()=>{S.ludi=!S.ludi;$('ludi').setAttribute('aria-pressed',S.ludi);$('ludi').textContent='Ludicrous mode: '+(S.ludi?'on':'off');
@@ -779,7 +846,7 @@ document.addEventListener('contextmenu',e=>e.preventDefault());
 (function(){
   const dpr=Math.min(2,window.devicePixelRatio||1);
   cv.width=W*dpr;cv.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);
-  setVeh(S.veh,true);
+  setVeh(S.veh,true);setHard(S.hard);
   $('name').value=myName;
   resetRun();
   let last=performance.now(),acc=0;
