@@ -186,7 +186,7 @@ function spawn(x){
     const g=addGround(x,keyOf(GROUND_KINDS),true),ok=keyOf(OVER_KINDS),d=OVER_KINDS[ok];
     addOver(x+g.w/2-d.w/2,ok,Math.max(140,g.top-corridorNow()));ref=g;
   }
-  if(n%3===2)S.picks.push({x:S.lastRef?(S.lastRef.x+x)/2:x-150,y:ROAD-120-Math.random()*150,got:false});
+  if(n%3===2)S.picks.push({x:x+S.gapDist/2+60,y:ROAD-120-Math.random()*150,got:false});
   S.lastRef=ref;
 }
 
@@ -536,7 +536,7 @@ function drawObstacles(){
     }else if(o.cat==='o')DRAWO[o.kind](o);else DRAWA[o.kind](o);
   }
   for(const p of S.picks){
-    if(p.got||p.x>W+30)continue;
+    if(p.got||p.x>W+80)continue;
     ctx.save();ctx.translate(p.x,p.y);const b=1+Math.sin(S.t*6)*.08;ctx.scale(b,b);
     ctx.fillStyle='rgba(93,255,154,.2)';ctx.beginPath();ctx.arc(0,0,20,0,7);ctx.fill();
     ctx.fillStyle='#5dff9a';ctx.fillRect(-8,-11,16,22);ctx.fillRect(-3,-14,6,3);
